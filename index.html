@@ -30,8 +30,12 @@
     const TOOLBAR_H = 48;
     const BOTTOM_PAD = 52;
 
+    // preferred bead size — only shrink when the stack would exceed string height
+    const DESIRED_BEAD_H = 18;
+    const DESIRED_GAP = 3;
+    const MAX_BEADS = 100;
+
     let players = [];
-    // falling: {player, n, x, y, targetY, w, h, color, outline, shine, vy}
     let falling = [];
     let resetHoldStart = 0;
     let resetHolding = false;
@@ -46,19 +50,16 @@
     resize();
 
     function getBeadStyle(n) {
-      // every 10th: medium blue
       if (n % 10 === 0) return {
         fill: '#3a6ea5',
         outline: '#8eb8e8',
         shine: 'rgba(180,210,255,0.4)'
       };
-      // every 5th: red
       if (n % 5 === 0) return {
         fill: '#c62828',
         outline: '#e88888',
         shine: 'rgba(255,180,180,0.35)'
       };
-      // slightly yellow off-white
       return {
         fill: '#f5f0d6',
         outline: '#fff8e0',
@@ -69,7 +70,7 @@
     function layout() {
       const n = Math.max(players.length, 1);
       const colW = canvas.width / n;
-      const topY = TOOLBAR_H + 18; // terminal center below toolbar
+      const topY = TOOLBAR_H + 18;
       const bottomY = canvas.height - BOTTOM_PAD;
       const stringH = Math.max(bottomY - topY, 20);
 
@@ -77,16 +78,23 @@
       for (const p of players) maxC = Math.max(maxC, p.count);
       for (const b of falling) maxC = Math.max(maxC, b.n);
 
-      // default zoom for 10 beads; scale out up to 100
-      const fitCount = Math.max(10, Math.min(Math.max(maxC, 1), 100));
-      // leave a little headroom so top bead doesn't sit under terminal
-      const slot = stringH / (fitCount + 2);
-      const beadH = Math.max(3, Math.min(16, slot * 0.72));
-      const gap = Math.max(1, slot - beadH);
-      // width follows column but also tracks vertical scale a bit
-      const beadW = Math.min(colW * 0.62, Math.max(10, beadH * 2.6));
+      // size as if at least 10 beads (default zoom), up to 100
+      const need = Math.max(maxC, 10);
+      const fit = Math.min(need, MAX_BEADS);
 
-      return { n, colW, topY, bottomY, stringH, beadH, beadW, gap, maxC, fitCount };
+      // fixed preferred spacing — only scale down when the tight stack won't fit
+      const natural = fit * (DESIRED_BEAD_H + DESIRED_GAP);
+      let scale = 1;
+      if (natural > stringH - 8) {
+        scale = (stringH - 8) / natural;
+      }
+      const beadH = Math.max(2.5, DESIRED_BEAD_H * scale);
+      const gap = Math.max(0.8, DESIRED_GAP * scale);
+
+      // width: as wide as column allows, no extra horizontal spacing
+      const beadW = Math.min(colW * 0.7, Math.max(8, beadH * 2.8));
+
+      return { n, colW, topY, bottomY, stringH, beadH, beadW, gap, maxC };
     }
 
     function addPlayer() {
@@ -133,7 +141,6 @@
     }
 
     function hitTest(x, y) {
-      // toolbar buttons
       if (y < TOOLBAR_H) {
         if (x < 56) return { type: 'reset' };
         if (x > canvas.width - 56) return { type: 'add' };
@@ -263,11 +270,9 @@
       const L = layout();
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // toolbar (darker green)
+      // toolbar
       ctx.fillStyle = '#0f2214';
       ctx.fillRect(0, 0, canvas.width, TOOLBAR_H);
-
-      // subtle bottom edge of toolbar
       ctx.strokeStyle = '#1a3a24';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -275,7 +280,6 @@
       ctx.lineTo(canvas.width, TOOLBAR_H - 0.5);
       ctx.stroke();
 
-      // reset button (left, lighter green)
       const btnY = TOOLBAR_H / 2;
       ctx.fillStyle = resetHolding ? '#3a6a4a' : '#2a5a3a';
       ctx.beginPath();
@@ -287,7 +291,6 @@
       ctx.textBaseline = 'middle';
       ctx.fillText('↻', 28, btnY + 1);
 
-      // + button (right, lighter green)
       ctx.fillStyle = '#2a5a3a';
       ctx.beginPath();
       ctx.roundRect(canvas.width - 46, 8, 36, 32, 6);
@@ -316,23 +319,27 @@
         ctx.lineTo(cx, L.bottomY);
         ctx.stroke();
 
-        // terminal
-        ctx.fillStyle = '#6a8a6a';
+        // terminal — grey with light grey minus
+        ctx.fillStyle = '#6a6a6a';
         ctx.beginPath();
-        ctx.arc(cx, L.topY, 11, 0, Math.PI * 2);
+        ctx.arc(cx, L.topY, 12, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = '#9aba9a';
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#8a8a8a';
+        ctx.lineWidth = 1.5;
         ctx.stroke();
+        ctx.fillStyle = '#c8c8c8';
+        ctx.font = 'bold 16px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('−', cx, L.topY + 0.5);
 
-        // landed beads
+        // landed beads — tight stack from bottom, no extra spread
         for (let k = 1; k <= p.count; k++) {
           const by = L.bottomY - k * (L.beadH + L.gap) + L.beadH / 2;
-          const style = getBeadStyle(k);
-          drawBead(cx, by, L.beadW, L.beadH, style);
+          drawBead(cx, by, L.beadW, L.beadH, getBeadStyle(k));
         }
 
-        // name pill
+        // name — white text
         const fs = Math.min(15, Math.max(10, L.colW / (p.name.length * 0.55 + 2)));
         ctx.font = `bold ${fs}px system-ui, sans-serif`;
         ctx.textAlign = 'center';
@@ -342,11 +349,10 @@
         ctx.beginPath();
         ctx.roundRect(cx - tw / 2, L.bottomY + 8, tw, 28, 8);
         ctx.fill();
-        ctx.fillStyle = '#d0e8d0';
+        ctx.fillStyle = '#ffffff';
         ctx.fillText(p.name, cx, L.bottomY + 22);
       }
 
-      // falling beads
       for (const b of falling) {
         drawBead(b.x, b.y, b.w, b.h, {
           fill: b.color,
@@ -361,13 +367,9 @@
       ctx.beginPath();
       ctx.ellipse(x, y, w / 2, h / 2, 0, 0, Math.PI * 2);
       ctx.fill();
-
-      // outline = same family as shine
       ctx.strokeStyle = style.outline;
       ctx.lineWidth = Math.max(1, h * 0.12);
       ctx.stroke();
-
-      // shine
       ctx.fillStyle = style.shine;
       ctx.beginPath();
       ctx.ellipse(x, y - h * 0.18, w * 0.28, h * 0.22, 0, 0, Math.PI * 2);
