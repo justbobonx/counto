@@ -91,6 +91,7 @@
     const GAP_RATIO = 0.18;
     const STORAGE_KEY = 'counto_players_v1';
     const LONG_MS = 1000;
+    const MAX_WIDTH_MULT = 1.6;
 
     let players = [];
     let falling = [];
@@ -149,26 +150,36 @@
     loadState();
 
     function widthMult(n) {
+      if (n % 25 === 0) return 1.6;
       if (n % 10 === 0) return 1.4;
       if (n % 5 === 0) return 1.2;
       return 1.0;
     }
 
     function getBeadStyle(n) {
+      if (n % 25 === 0) return {
+        fill: '#9c27b0',
+        outline: '#e040fb',
+        shine: 'rgba(240,180,255,0.45)',
+        round: 0.15
+      };
       if (n % 10 === 0) return {
         fill: '#3a6ea5',
         outline: '#8eb8e8',
-        shine: 'rgba(180,210,255,0.4)'
+        shine: 'rgba(180,210,255,0.4)',
+        round: 0.25
       };
       if (n % 5 === 0) return {
         fill: '#c62828',
         outline: '#e88888',
-        shine: 'rgba(255,180,180,0.35)'
+        shine: 'rgba(255,180,180,0.35)',
+        round: 0.35
       };
       return {
         fill: '#f5f0d6',
         outline: '#8a8a7a',
-        shine: 'rgba(255,255,230,0.4)'
+        shine: 'rgba(255,255,230,0.4)',
+        round: 0.45
       };
     }
 
@@ -191,9 +202,9 @@
       let gap = slot * GAP_RATIO;
       let baseW = beadH * BASE_ASPECT;
 
-      const widest = baseW * 1.4;
+      const widest = baseW * MAX_WIDTH_MULT;
       if (widest > maxBeadW) {
-        baseW = maxBeadW / 1.4;
+        baseW = maxBeadW / MAX_WIDTH_MULT;
         beadH = baseW / BASE_ASPECT;
         gap = beadH * GAP_RATIO;
       }
@@ -304,6 +315,7 @@
         color: style.fill,
         outline: style.outline,
         shine: style.shine,
+        round: style.round,
         vy: 0
       });
     }
@@ -375,7 +387,6 @@
       clearHolds();
 
       if (!hit) return;
-
       if (hit.type === 'reset') return;
 
       if (hit.type === 'add') {
@@ -558,22 +569,27 @@
         drawBead(b.x, b.y, b.w, b.h, {
           fill: b.color,
           outline: b.outline,
-          shine: b.shine
+          shine: b.shine,
+          round: b.round
         });
       }
     }
 
     function drawBead(x, y, w, h, style) {
+      const r = Math.min(w, h) * (style.round != null ? style.round : 0.45);
       ctx.fillStyle = style.fill;
       ctx.beginPath();
-      ctx.ellipse(x, y, w / 2, h / 2, 0, 0, Math.PI * 2);
+      ctx.roundRect(x - w / 2, y - h / 2, w, h, r);
       ctx.fill();
       ctx.strokeStyle = style.outline;
       ctx.lineWidth = Math.max(1, h * 0.12);
       ctx.stroke();
+      const sw = w * 0.55;
+      const sh = h * 0.28;
+      const sr = Math.min(sw, sh) * (style.round != null ? style.round : 0.45);
       ctx.fillStyle = style.shine;
       ctx.beginPath();
-      ctx.ellipse(x, y - h * 0.18, w * 0.28, h * 0.22, 0, 0, Math.PI * 2);
+      ctx.roundRect(x - sw / 2, y - h * 0.32, sw, sh, sr);
       ctx.fill();
     }
 
