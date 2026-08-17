@@ -3,7 +3,6 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  
   <title>counto</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -36,7 +35,7 @@
     }
     #nameOverlay.show { display: flex; }
     #nameOverlay input {
-      font-size: 18px; /* ≥16 avoids iOS zoom */
+      font-size: 18px;
       padding: 14px 16px;
       border-radius: 10px;
       border: 2px solid #2a5a3a;
@@ -89,6 +88,7 @@
     const MIN_NAME_W = 56;
     const BASE_ASPECT = 1.68;
     const GAP_RATIO = 0.18;
+    const STORAGE_KEY = 'counto_players_v1';
 
     let players = [];
     let falling = [];
@@ -96,9 +96,44 @@
     let resetHolding = false;
     let resetDidLong = false;
     let termHoldStart = 0;
-    let termHolding = false; // index of player being long-pressed, or -1
+    let termHolding = -1;
     let termDidLong = false;
     let lastPointer = null;
+    let savePending = false;
+
+    function saveState() {
+      try {
+        const data = players.map(p => ({ name: p.name, count: p.count }));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      } catch (e) { /* quota / private mode */ }
+    }
+
+    // coalesce rapid saves (e.g. many beads landing)
+    function scheduleSave() {
+      if (savePending) return;
+      savePending = true;
+      requestAnimationFrame(() => {
+        savePending = false;
+        saveState();
+      });
+    }
+
+    function loadState() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return;
+        const data = JSON.parse(raw);
+        if (!Array.isArray(data)) return;
+        players = data
+          .filter(p => p && typeof p.name === 'string')
+          .map(p => ({
+            name: String(p.name).slice(0, 12),
+            count: Math.max(0, Math.min(MAX_BEADS, Number(p.count) || 0) | 0)
+          }));
+      } catch (e) {
+        players = [];
+      }
+    }
 
     function resize() {
       canvas.width = window.innerWidth;
@@ -106,6 +141,7 @@
     }
     window.addEventListener('resize', resize);
     resize();
+    loadState();
 
     function widthMult(n) {
       if (n % 10 === 0) return 1.4;
@@ -143,7 +179,6 @@
       for (const p of players) maxC = Math.max(maxC, p.count);
       for (const b of falling) maxC = Math.max(maxC, b.n);
 
-      // needed beads + 2 for top headroom; min 10 for default zoom; max 100
       const fit = Math.min(Math.max(maxC + 2, 10), MAX_BEADS);
       const slot = stringH / fit;
 
@@ -168,7 +203,6 @@
     function addPlayer() {
       nameInput.value = '';
       nameOverlay.classList.add('show');
-      // focus after paint so mobile keyboard opens
       requestAnimationFrame(() => {
         nameInput.focus();
         nameInput.click();
@@ -181,6 +215,7 @@
       nameInput.blur();
       if (name) {
         players.push({ name: name.slice(0, 12), count: 0 });
+        saveState();
       }
     }
 
@@ -203,21 +238,23 @@
     function removePlayer(i) {
       if (i < 0 || i >= players.length) return;
       players.splice(i, 1);
-      // drop falling beads for this player; shift indices above
       falling = falling.filter(b => b.player !== i).map(b => {
         if (b.player > i) b.player--;
         return b;
       });
+      saveState();
     }
 
     function clearCounts() {
       for (const p of players) p.count = 0;
       falling = [];
+      saveState();
     }
 
     function clearAll() {
       players = [];
       falling = [];
+      saveState();
     }
 
     function allZero() {
@@ -298,7 +335,6 @@
 
       const hit = hitTest(x, y);
 
-      // terminal long-press already handled in update
       if (termDidLong) {
         termDidLong = false;
         termHolding = -1;
@@ -342,7 +378,6 @@
         return;
       }
       if (hit.type === 'term') {
-        // short tap: remove one bead (or pending)
         const i = hit.i;
         termHolding = -1;
         for (let fi = falling.length - 1; fi >= 0; fi--) {
@@ -351,7 +386,10 @@
             return;
           }
         }
-        if (players[i] && players[i].count > 0) players[i].count--;
+        if (players[i] && players[i].count > 0) {
+          players[i].count--;
+          scheduleSave();
+        }
         return;
       }
       termHolding = -1;
@@ -381,6 +419,7 @@
     canvas.addEventListener('touchend', onPointerUp, {passive: false});
 
     function update(dt) {
+      let landed = false;
       for (let i = falling.length - 1; i >= 0; i--) {
         const b = falling[i];
         b.vy += 1800 * dt;
@@ -394,8 +433,10 @@
             p.count = Math.max(p.count, b.n);
           }
           falling.splice(i, 1);
+          landed = true;
         }
       }
+      if (landed) scheduleSave();
       if (resetHolding && performance.now() - resetHoldStart >= 1000) {
         clearCounts();
         resetHolding = false;
@@ -459,7 +500,6 @@
         ctx.lineTo(cx, L.bottomY);
         ctx.stroke();
 
-        // terminal — highlight while holding
         const holdingThis = termHolding === i;
         ctx.fillStyle = holdingThis ? '#888' : '#6a6a6a';
         ctx.beginPath();
