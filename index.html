@@ -150,14 +150,14 @@
     loadState();
 
     function widthMult(n) {
-      if (n % 25 === 0) return 1.6;
+      if (n % 50 === 0) return 1.6;
       if (n % 10 === 0) return 1.4;
       if (n % 5 === 0) return 1.2;
       return 1.0;
     }
 
     function getBeadStyle(n) {
-      if (n % 25 === 0) return {
+      if (n % 50 === 0) return {
         fill: '#9c27b0',
         outline: '#e040fb',
         shine: 'rgba(240,180,255,0.45)',
