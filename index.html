@@ -3,21 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Counto</title>
+  <title>counto</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: #111;
+      background: #1a3320;
       touch-action: none;
       -webkit-user-select: none;
       user-select: none;
     }
     canvas {
       display: block;
-      background: #0d0d0d;
+      background: #1a3320;
     }
   </style>
 </head>
@@ -28,9 +28,11 @@
     const ctx = canvas.getContext('2d');
 
     let players = [];
-    let falling = []; // {x, y, targetY, w, h, color, vy}
+    // falling: {player, n, x, y, targetY, w, h, color, vy}
+    let falling = [];
     let resetHoldStart = 0;
     let resetHolding = false;
+    let resetDidLong = false; // after long-press clear, ignore the subsequent up for name-clear
     let lastPointer = null;
 
     function resize() {
@@ -56,7 +58,7 @@
       const stringH = Math.max(bottomY - topY, 20);
       let maxC = 0;
       for (const p of players) maxC = Math.max(maxC, p.count);
-      // also consider potential from falling but ignore
+      for (const b of falling) maxC = Math.max(maxC, b.n);
       const maxBeads = Math.max(maxC, 8);
       const beadH = Math.min(14, Math.max(6, stringH / (maxBeads + 3)));
       const beadW = Math.min(colW * 0.65, 36);
@@ -85,13 +87,19 @@
       return players.every(p => p.count === 0) && falling.length === 0;
     }
 
+    function pendingFor(i) {
+      return falling.filter(b => b.player === i).length;
+    }
+
     function spawnDrop(i, L) {
       const p = players[i];
-      const n = p.count; // already incremented
-      const color = getBeadColor(n);
+      const nextN = p.count + pendingFor(i) + 1;
+      const color = getBeadColor(nextN);
       const x = (i + 0.5) * L.colW;
-      const targetY = L.bottomY - n * (L.beadH + L.gap) + L.beadH / 2;
+      const targetY = L.bottomY - nextN * (L.beadH + L.gap) + L.beadH / 2;
       falling.push({
+        player: i,
+        n: nextN,
         x, y: L.topY + 20, targetY,
         w: L.beadW, h: L.beadH,
         color, vy: 0
@@ -100,18 +108,14 @@
 
     function hitTest(x, y) {
       const L = layout();
-      // reset button upper left
       if (x < 44 && y < 44) return { type: 'reset' };
-      // + button bottom right
       if (x > canvas.width - 52 && y > canvas.height - 52) return { type: 'add' };
       if (players.length === 0) return null;
       const i = Math.floor(x / L.colW);
       if (i < 0 || i >= players.length) return null;
       const cx = (i + 0.5) * L.colW;
-      // terminal
       const termR = 14;
       if (Math.hypot(x - cx, y - L.topY) < termR + 6) return { type: 'term', i };
-      // name area bottom
       if (y > L.bottomY - 8 && y < canvas.height - 8) return { type: 'name', i };
       return null;
     }
@@ -126,6 +130,7 @@
       if (hit && hit.type === 'reset') {
         resetHolding = true;
         resetHoldStart = performance.now();
+        resetDidLong = false;
       } else {
         resetHolding = false;
       }
@@ -137,13 +142,18 @@
       const x = lastPointer.x;
       const y = lastPointer.y;
       lastPointer = null;
-      const held = resetHolding && (performance.now() - resetHoldStart >= 900);
-      resetHolding = false;
 
       const hit = hitTest(x, y);
-      if (!hit) return;
 
-      if (hit.type === 'reset') {
+      if (hit && hit.type === 'reset') {
+        // if this press already did a long-press clear, require release+repress for name clear
+        if (resetDidLong) {
+          resetDidLong = false;
+          resetHolding = false;
+          return;
+        }
+        const held = resetHolding && (performance.now() - resetHoldStart >= 900);
+        resetHolding = false;
         if (held) {
           clearCounts();
         } else if (allZero()) {
@@ -151,28 +161,36 @@
         }
         return;
       }
+
+      resetHolding = false;
+      resetDidLong = false;
+
+      if (!hit) return;
+
       if (hit.type === 'add') {
         addPlayer();
         return;
       }
       if (hit.type === 'name') {
         const L = layout();
-        players[hit.i].count++;
         spawnDrop(hit.i, L);
         return;
       }
       if (hit.type === 'term') {
         const p = players[hit.i];
-        if (p.count > 0) {
-          p.count--;
-          // cancel any falling for visual consistency? just leave, they will overshoot but rare
+        // cancel any pending falling for this player first, then reduce count
+        for (let fi = falling.length - 1; fi >= 0; fi--) {
+          if (falling[fi].player === hit.i) {
+            falling.splice(fi, 1);
+            return; // removed one pending drop instead of touching landed count
+          }
         }
+        if (p.count > 0) p.count--;
         return;
       }
     }
 
     function onPointerMove(e) {
-      // optional: cancel hold if move away
       if (resetHolding && lastPointer) {
         const rect = canvas.getBoundingClientRect();
         const x = (e.clientX || (e.touches && e.touches[0].clientX)) - rect.left;
@@ -187,25 +205,31 @@
     canvas.addEventListener('pointerup', onPointerUp);
     canvas.addEventListener('pointercancel', () => { resetHolding = false; lastPointer = null; });
     canvas.addEventListener('pointermove', onPointerMove);
-    // also touch for older
     canvas.addEventListener('touchstart', onPointerDown, {passive: false});
     canvas.addEventListener('touchend', onPointerUp, {passive: false});
 
     function update(dt) {
-      // falling
       for (let i = falling.length - 1; i >= 0; i--) {
         const b = falling[i];
-        b.vy += 1800 * dt; // gravity
+        b.vy += 1800 * dt;
         b.y += b.vy * dt;
         if (b.y >= b.targetY) {
           b.y = b.targetY;
+          // land: only then increase the count
+          const p = players[b.player];
+          if (p && b.n === p.count + 1) {
+            p.count = b.n;
+          } else if (p) {
+            p.count = Math.max(p.count, b.n);
+          }
           falling.splice(i, 1);
         }
       }
-      // long press check live
+      // long press clears counts; mark so the following pointerup does not also clear names
       if (resetHolding && performance.now() - resetHoldStart >= 1000) {
         clearCounts();
         resetHolding = false;
+        resetDidLong = true;
       }
     }
 
@@ -246,7 +270,7 @@
         const cx = (i + 0.5) * L.colW;
 
         // string
-        ctx.strokeStyle = '#555';
+        ctx.strokeStyle = '#3a5a3a';
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(cx, L.topY + 14);
@@ -262,7 +286,7 @@
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        // beads (landed)
+        // landed beads only (count)
         for (let k = 1; k <= p.count; k++) {
           const by = L.bottomY - k * (L.beadH + L.gap) + L.beadH / 2;
           const color = getBeadColor(k);
@@ -270,14 +294,12 @@
         }
 
         // name
-        ctx.fillStyle = '#ccc';
         const fs = Math.min(16, Math.max(10, L.colW / (p.name.length * 0.55 + 2)));
         ctx.font = `bold ${fs}px system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        // bg pill
         const tw = ctx.measureText(p.name).width + 12;
-        ctx.fillStyle = '#222';
+        ctx.fillStyle = '#1a2a1a';
         ctx.beginPath();
         ctx.roundRect(cx - tw / 2, L.bottomY + 6, tw, 28, 8);
         ctx.fill();
@@ -285,7 +307,7 @@
         ctx.fillText(p.name, cx, L.bottomY + 20);
       }
 
-      // falling beads
+      // falling beads (not yet counted)
       for (const b of falling) {
         drawBead(b.x, b.y, b.w, b.h, b.color);
       }
@@ -296,11 +318,9 @@
       ctx.beginPath();
       ctx.ellipse(x, y, w / 2, h / 2, 0, 0, Math.PI * 2);
       ctx.fill();
-      // subtle edge
       ctx.strokeStyle = color === '#1a1a1a' ? '#444' : 'rgba(0,0,0,0.25)';
       ctx.lineWidth = 1;
       ctx.stroke();
-      // highlight
       if (color !== '#1a1a1a') {
         ctx.fillStyle = 'rgba(255,255,255,0.25)';
         ctx.beginPath();
