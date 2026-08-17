@@ -72,7 +72,7 @@
     <input id="nameInput" type="text" maxlength="12" placeholder="Player name" enterkeyhint="done" autocomplete="off" autocorrect="off" />
     <div class="row">
       <button type="button" class="cancel" id="nameCancel">Cancel</button>
-      <button type="button" class="ok" id="nameOk">Add</button>
+      <button type="button" class="ok" id="nameOk">Save</button>
     </div>
   </div>
   <script>
@@ -80,6 +80,7 @@
     const ctx = canvas.getContext('2d');
     const nameOverlay = document.getElementById('nameOverlay');
     const nameInput = document.getElementById('nameInput');
+    const nameOkBtn = document.getElementById('nameOk');
 
     const TOOLBAR_H = 48;
     const BOTTOM_PAD = 52;
@@ -89,6 +90,7 @@
     const BASE_ASPECT = 1.68;
     const GAP_RATIO = 0.18;
     const STORAGE_KEY = 'counto_players_v1';
+    const LONG_MS = 1000;
 
     let players = [];
     let falling = [];
@@ -98,6 +100,10 @@
     let termHoldStart = 0;
     let termHolding = -1;
     let termDidLong = false;
+    let nameHoldStart = 0;
+    let nameHolding = -1;
+    let nameDidLong = false;
+    let editIndex = -1;
     let lastPointer = null;
     let savePending = false;
 
@@ -105,10 +111,9 @@
       try {
         const data = players.map(p => ({ name: p.name, count: p.count }));
         localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      } catch (e) { /* quota / private mode */ }
+      } catch (e) {}
     }
 
-    // coalesce rapid saves (e.g. many beads landing)
     function scheduleSave() {
       if (savePending) return;
       savePending = true;
@@ -200,28 +205,47 @@
       return { n, colW, maxBeadW, topY, bottomY, stringH, beadH, baseW, gap, maxC };
     }
 
-    function addPlayer() {
-      nameInput.value = '';
+    function openNameEditor(prefill, index) {
+      editIndex = index;
+      nameInput.value = prefill || '';
+      nameOkBtn.textContent = index >= 0 ? 'Save' : 'Add';
       nameOverlay.classList.add('show');
       requestAnimationFrame(() => {
         nameInput.focus();
-        nameInput.click();
+        nameInput.select();
       });
+    }
+
+    function addPlayer() {
+      openNameEditor('', -1);
+    }
+
+    function editPlayer(i) {
+      if (i < 0 || i >= players.length) return;
+      openNameEditor(players[i].name, i);
     }
 
     function commitName() {
       const name = nameInput.value.trim();
       nameOverlay.classList.remove('show');
       nameInput.blur();
-      if (name) {
-        players.push({ name: name.slice(0, 12), count: 0 });
-        saveState();
+      if (!name) {
+        editIndex = -1;
+        return;
       }
+      if (editIndex >= 0 && editIndex < players.length) {
+        players[editIndex].name = name.slice(0, 12);
+      } else {
+        players.push({ name: name.slice(0, 12), count: 0 });
+      }
+      editIndex = -1;
+      saveState();
     }
 
     function cancelName() {
       nameOverlay.classList.remove('show');
       nameInput.blur();
+      editIndex = -1;
     }
 
     document.getElementById('nameOk').addEventListener('click', commitName);
@@ -301,6 +325,12 @@
       return null;
     }
 
+    function clearHolds() {
+      resetHolding = false;
+      termHolding = -1;
+      nameHolding = -1;
+    }
+
     function onPointerDown(e) {
       if (nameOverlay.classList.contains('show')) return;
       e.preventDefault();
@@ -309,19 +339,19 @@
       const y = (e.clientY || e.touches[0].clientY) - rect.top;
       lastPointer = { x, y };
       const hit = hitTest(x, y);
+      clearHolds();
+      resetDidLong = false;
+      termDidLong = false;
+      nameDidLong = false;
       if (hit && hit.type === 'reset') {
         resetHolding = true;
         resetHoldStart = performance.now();
-        resetDidLong = false;
-        termHolding = -1;
       } else if (hit && hit.type === 'term') {
         termHolding = hit.i;
         termHoldStart = performance.now();
-        termDidLong = false;
-        resetHolding = false;
-      } else {
-        resetHolding = false;
-        termHolding = -1;
+      } else if (hit && hit.type === 'name') {
+        nameHolding = hit.i;
+        nameHoldStart = performance.now();
       }
     }
 
@@ -333,53 +363,32 @@
       const y = lastPointer.y;
       lastPointer = null;
 
-      const hit = hitTest(x, y);
-
-      if (termDidLong) {
+      if (resetDidLong || termDidLong || nameDidLong) {
+        resetDidLong = false;
         termDidLong = false;
-        termHolding = -1;
-        resetHolding = false;
+        nameDidLong = false;
+        clearHolds();
         return;
       }
 
-      if (hit && hit.type === 'reset') {
-        if (resetDidLong) {
-          resetDidLong = false;
-          resetHolding = false;
-          return;
-        }
-        const held = resetHolding && (performance.now() - resetHoldStart >= 900);
-        resetHolding = false;
-        if (held) {
-          clearCounts();
-        } else if (allZero()) {
-          clearAll();
-        }
-        return;
-      }
+      const hit = hitTest(x, y);
+      clearHolds();
 
-      resetHolding = false;
-      resetDidLong = false;
+      if (!hit) return;
 
-      if (!hit) {
-        termHolding = -1;
-        return;
-      }
+      if (hit.type === 'reset') return;
 
       if (hit.type === 'add') {
-        termHolding = -1;
         addPlayer();
         return;
       }
       if (hit.type === 'name') {
-        termHolding = -1;
         const L = layout();
         spawnDrop(hit.i, L);
         return;
       }
       if (hit.type === 'term') {
         const i = hit.i;
-        termHolding = -1;
         for (let fi = falling.length - 1; fi >= 0; fi--) {
           if (falling[fi].player === i) {
             falling.splice(fi, 1);
@@ -390,28 +399,24 @@
           players[i].count--;
           scheduleSave();
         }
-        return;
       }
-      termHolding = -1;
     }
 
     function onPointerMove(e) {
-      if (lastPointer && (resetHolding || termHolding >= 0)) {
-        const rect = canvas.getBoundingClientRect();
-        const x = (e.clientX || (e.touches && e.touches[0].clientX)) - rect.left;
-        const y = (e.clientY || (e.touches && e.touches[0].clientY)) - rect.top;
-        if (Math.hypot(x - lastPointer.x, y - lastPointer.y) > 20) {
-          resetHolding = false;
-          termHolding = -1;
-        }
+      if (!lastPointer) return;
+      if (!(resetHolding || termHolding >= 0 || nameHolding >= 0)) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = (e.clientX || (e.touches && e.touches[0].clientX)) - rect.left;
+      const y = (e.clientY || (e.touches && e.touches[0].clientY)) - rect.top;
+      if (Math.hypot(x - lastPointer.x, y - lastPointer.y) > 20) {
+        clearHolds();
       }
     }
 
     canvas.addEventListener('pointerdown', onPointerDown);
     canvas.addEventListener('pointerup', onPointerUp);
     canvas.addEventListener('pointercancel', () => {
-      resetHolding = false;
-      termHolding = -1;
+      clearHolds();
       lastPointer = null;
     });
     canvas.addEventListener('pointermove', onPointerMove);
@@ -437,15 +442,30 @@
         }
       }
       if (landed) scheduleSave();
-      if (resetHolding && performance.now() - resetHoldStart >= 1000) {
-        clearCounts();
+
+      const now = performance.now();
+
+      if (resetHolding && now - resetHoldStart >= LONG_MS) {
+        if (allZero()) {
+          clearAll();
+        } else {
+          clearCounts();
+        }
         resetHolding = false;
         resetDidLong = true;
       }
-      if (termHolding >= 0 && performance.now() - termHoldStart >= 1000) {
+
+      if (termHolding >= 0 && now - termHoldStart >= LONG_MS) {
         removePlayer(termHolding);
         termHolding = -1;
         termDidLong = true;
+      }
+
+      if (nameHolding >= 0 && now - nameHoldStart >= LONG_MS) {
+        const idx = nameHolding;
+        nameHolding = -1;
+        nameDidLong = true;
+        editPlayer(idx);
       }
     }
 
@@ -526,7 +546,7 @@
         ctx.textBaseline = 'middle';
         const textW = ctx.measureText(p.name).width + 14;
         const tw = Math.min(L.colW - 4, Math.max(MIN_NAME_W, textW));
-        ctx.fillStyle = '#122818';
+        ctx.fillStyle = nameHolding === i ? '#1a3a28' : '#122818';
         ctx.beginPath();
         ctx.roundRect(cx - tw / 2, L.bottomY + 8, tw, 30, 8);
         ctx.fill();
