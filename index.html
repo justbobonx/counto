@@ -126,6 +126,14 @@
       return out;
     }
 
+    // Denomination of the bead that falls when count becomes `to`
+    function dropValue(to) {
+      if (to % 50 === 0) return 50;
+      if (to % 10 === 0) return 10;
+      if (to % 5 === 0) return 5;
+      return 1;
+    }
+
     function saveState() {
       try {
         const data = players.map(p => ({ name: p.name, count: p.count }));
@@ -325,15 +333,19 @@
 
     function spawnDrop(i, L) {
       const p = players[i];
-      if (p.count + pendingFor(i) >= MAX_COUNT) return;
       const pending = pendingFor(i);
-      const stackSlots = visualHeight(p.count, pending);
-      const style = getBeadStyle(1);
+      if (p.count + pending >= MAX_COUNT) return;
+      const nextCount = p.count + pending + 1;
+      const val = dropValue(nextCount);
+      const style = getBeadStyle(val);
+      // land on top of the final compressed stack (carry pops lower beads on land)
+      const finalSlots = beadsForCount(nextCount).length;
       const x = (i + 0.5) * L.colW;
-      const w = L.baseW * widthMult(1);
-      const targetY = L.bottomY - (stackSlots + 1) * (L.beadH + L.gap) + L.beadH / 2;
+      const w = L.baseW * widthMult(val);
+      const targetY = L.bottomY - finalSlots * (L.beadH + L.gap) + L.beadH / 2;
       falling.push({
         player: i,
+        val,
         x, y: L.topY + 16, targetY,
         w, h: L.beadH,
         color: style.fill,
