@@ -76,498 +76,566 @@
     </div>
   </div>
   <script>
-    const canvas = document.getElementById('c');
-    const ctx = canvas.getContext('2d');
-    const nameOverlay = document.getElementById('nameOverlay');
-    const nameInput = document.getElementById('nameInput');
-    const nameOkBtn = document.getElementById('nameOk');
+    const Config = {
+      toolbarH: 48,
+      bottomPad: 52,
+      colPad: 10,
+      maxCount: 100,
+      minFit: 12,
+      maxFit: 16,
+      minNameW: 56,
+      baseAspect: 1.68,
+      gapRatio: 0.18,
+      storageKey: 'counto_players_v1',
+      longMs: 1000,
+      maxWidthMult: 1.6,
+      gravity: 1800
+    };
 
-    const TOOLBAR_H = 48;
-    const BOTTOM_PAD = 52;
-    const COL_PAD = 10;
-    const MAX_COUNT = 100;
-    const MIN_FIT = 12;
-    const MAX_FIT = 16;
-    const MIN_NAME_W = 56;
-    const BASE_ASPECT = 1.68;
-    const GAP_RATIO = 0.18;
-    const STORAGE_KEY = 'counto_players_v1';
-    const LONG_MS = 1000;
-    const MAX_WIDTH_MULT = 1.6;
+    const BeadLook = {
+      1:  { mult: 1.0, fill: '#f5f0d6', outline: '#8a8a7a', shine: 'rgba(255,255,230,0.4)', round: 0.45 },
+      5:  { mult: 1.2, fill: '#c62828', outline: '#e88888', shine: 'rgba(255,180,180,0.35)', round: 0.35 },
+      10: { mult: 1.4, fill: '#3a6ea5', outline: '#8eb8e8', shine: 'rgba(180,210,255,0.4)', round: 0.25 },
+      50: { mult: 1.6, fill: '#9c27b0', outline: '#e040fb', shine: 'rgba(240,180,255,0.45)', round: 0.15 }
+    };
 
-    let players = [];
-    let falling = [];
-    let resetHoldStart = 0;
-    let resetHolding = false;
-    let resetDidLong = false;
-    let termHoldStart = 0;
-    let termHolding = -1;
-    let termDidLong = false;
-    let nameHoldStart = 0;
-    let nameHolding = -1;
-    let nameDidLong = false;
-    let editIndex = -1;
-    let lastPointer = null;
-    let savePending = false;
-
-    // Bottom → top: fifties, tens, fives, ones.
-    // 5th unit becomes a red and clears 4 whites; further whites stack on the red.
-    // 10 clears red+4 whites into a blue; 50 clears 5 blues into a purple.
-    function beadsForCount(n) {
-      const out = [];
-      let r = Math.max(0, n | 0);
-      const n50 = Math.floor(r / 50); r %= 50;
-      const n10 = Math.floor(r / 10); r %= 10;
-      const n5 = Math.floor(r / 5); r %= 5;
-      for (let i = 0; i < n50; i++) out.push(50);
-      for (let i = 0; i < n10; i++) out.push(10);
-      for (let i = 0; i < n5; i++) out.push(5);
-      for (let i = 0; i < r; i++) out.push(1);
-      return out;
+    function lookForDenom(v) {
+      return BeadLook[v] || BeadLook[1];
     }
 
-    // Denomination of the bead that falls when count becomes `to`
-    function dropValue(to) {
-      if (to % 50 === 0) return 50;
-      if (to % 10 === 0) return 10;
-      if (to % 5 === 0) return 5;
+    function denomForOrdinal(n) {
+      if (n % 50 === 0) return 50;
+      if (n % 10 === 0) return 10;
+      if (n % 5 === 0) return 5;
       return 1;
     }
 
-    // How many bottom beads survive the transition from → to (common prefix)
-    function keepPrefixLen(from, to) {
-      const a = beadsForCount(from);
-      const b = beadsForCount(to);
+    const StackMode = {
+      collapsed: {
+        id: 'collapsed',
+        build(count) {
+          const out = [];
+          let r = Math.max(0, count | 0);
+          const n50 = Math.floor(r / 50); r %= 50;
+          const n10 = Math.floor(r / 10); r %= 10;
+          const n5 = Math.floor(r / 5); r %= 5;
+          for (let i = 0; i < n50; i++) out.push({ denom: 50, look: BeadLook[50] });
+          for (let i = 0; i < n10; i++) out.push({ denom: 10, look: BeadLook[10] });
+          for (let i = 0; i < n5; i++) out.push({ denom: 5, look: BeadLook[5] });
+          for (let i = 0; i < r; i++) out.push({ denom: 1, look: BeadLook[1] });
+          return out;
+        },
+        dropDenom(to) {
+          if (to % 50 === 0) return 50;
+          if (to % 10 === 0) return 10;
+          if (to % 5 === 0) return 5;
+          return 1;
+        },
+        crush: true
+      },
+
+      flat: {
+        id: 'flat',
+        build(count) {
+          const out = [];
+          const n = Math.max(0, count | 0);
+          for (let k = 1; k <= n; k++) {
+            const d = denomForOrdinal(k);
+            out.push({ denom: d, look: lookForDenom(d) });
+          }
+          return out;
+        },
+        dropDenom(to) {
+          return denomForOrdinal(to);
+        },
+        crush: false
+      }
+    };
+
+    function keepPrefixLen(mode, from, to) {
+      const a = mode.build(from);
+      const b = mode.build(to);
       let i = 0;
-      while (i < a.length && i < b.length && a[i] === b[i]) i++;
+      while (i < a.length && i < b.length && a[i].denom === b[i].denom) i++;
       return i;
     }
 
-    function saveState() {
-      try {
-        const data = players.map(p => ({ name: p.name, count: p.count }));
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      } catch (e) {}
-    }
-
-    function scheduleSave() {
-      if (savePending) return;
-      savePending = true;
-      requestAnimationFrame(() => {
-        savePending = false;
-        saveState();
-      });
-    }
-
-    function loadState() {
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return;
-        const data = JSON.parse(raw);
-        if (!Array.isArray(data)) return;
-        players = data
-          .filter(p => p && typeof p.name === 'string')
-          .map(p => ({
-            name: String(p.name).slice(0, 12),
-            count: Math.max(0, Math.min(MAX_COUNT, Number(p.count) || 0) | 0)
-          }));
-      } catch (e) {
-        players = [];
+    class Player {
+      constructor(name, count = 0) {
+        this.name = String(name).slice(0, 12);
+        this.count = Math.max(0, Math.min(Config.maxCount, count | 0));
       }
     }
 
-    function resize() {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    }
-    window.addEventListener('resize', resize);
-    resize();
-    loadState();
-
-    function widthMult(v) {
-      if (v === 50) return 1.6;
-      if (v === 10) return 1.4;
-      if (v === 5) return 1.2;
-      return 1.0;
-    }
-
-    function getBeadStyle(v) {
-      if (v === 50) return {
-        fill: '#9c27b0',
-        outline: '#e040fb',
-        shine: 'rgba(240,180,255,0.45)',
-        round: 0.15
-      };
-      if (v === 10) return {
-        fill: '#3a6ea5',
-        outline: '#8eb8e8',
-        shine: 'rgba(180,210,255,0.4)',
-        round: 0.25
-      };
-      if (v === 5) return {
-        fill: '#c62828',
-        outline: '#e88888',
-        shine: 'rgba(255,180,180,0.35)',
-        round: 0.35
-      };
-      return {
-        fill: '#f5f0d6',
-        outline: '#8a8a7a',
-        shine: 'rgba(255,255,230,0.4)',
-        round: 0.45
-      };
+    class FallingBead {
+      constructor({ player, denom, fromCount, toCount, keep, x, y, targetY, w, h, look }) {
+        this.player = player;
+        this.denom = denom;
+        this.fromCount = fromCount;
+        this.toCount = toCount;
+        this.keep = keep;
+        this.x = x;
+        this.y = y;
+        this.targetY = targetY;
+        this.w = w;
+        this.h = h;
+        this.look = look;
+        this.vy = 0;
+      }
     }
 
-    function visualHeight(count, pending) {
-      return beadsForCount(count).length + pending;
-    }
+    class App {
+      constructor() {
+        this.canvas = document.getElementById('c');
+        this.ctx = this.canvas.getContext('2d');
+        this.nameOverlay = document.getElementById('nameOverlay');
+        this.nameInput = document.getElementById('nameInput');
+        this.nameOkBtn = document.getElementById('nameOk');
 
-    function layout() {
-      const n = Math.max(players.length, 1);
-      const colW = canvas.width / n;
-      const maxBeadW = Math.max(6, colW - COL_PAD);
-      const topY = TOOLBAR_H + 18;
-      const bottomY = canvas.height - BOTTOM_PAD;
-      const stringH = Math.max(bottomY - topY, 20);
+        this.players = [];
+        this.falling = [];
+        this.mode = StackMode.collapsed;
 
-      let maxStack = 0;
-      for (let i = 0; i < players.length; i++) {
-        maxStack = Math.max(maxStack, visualHeight(players[i].count, pendingFor(i)));
+        this.resetHoldStart = 0;
+        this.resetHolding = false;
+        this.resetDidLong = false;
+        this.termHoldStart = 0;
+        this.termHolding = -1;
+        this.termDidLong = false;
+        this.nameHoldStart = 0;
+        this.nameHolding = -1;
+        this.nameDidLong = false;
+        this.editIndex = -1;
+        this.lastPointer = null;
+        this.savePending = false;
+        this.lastTime = performance.now();
+
+        this.bindUi();
+        this.resize();
+        this.loadState();
+        window.addEventListener('resize', () => this.resize());
+        requestAnimationFrame(t => this.frame(t));
       }
 
-      const fit = Math.min(Math.max(maxStack + 2, MIN_FIT), MAX_FIT);
-      const slot = stringH / fit;
-
-      let beadH = slot * (1 - GAP_RATIO);
-      let gap = slot * GAP_RATIO;
-      let baseW = beadH * BASE_ASPECT;
-
-      const widest = baseW * MAX_WIDTH_MULT;
-      if (widest > maxBeadW) {
-        baseW = maxBeadW / MAX_WIDTH_MULT;
-        beadH = baseW / BASE_ASPECT;
-        gap = beadH * GAP_RATIO;
+      saveState() {
+        try {
+          const data = this.players.map(p => ({ name: p.name, count: p.count }));
+          localStorage.setItem(Config.storageKey, JSON.stringify(data));
+        } catch (e) {}
       }
 
-      beadH = Math.max(2.5, beadH);
-      gap = Math.max(0.6, gap);
-      baseW = Math.max(5, baseW);
-
-      return { n, colW, maxBeadW, topY, bottomY, stringH, beadH, baseW, gap, maxStack };
-    }
-
-    function openNameEditor(prefill, index) {
-      editIndex = index;
-      nameInput.value = prefill || '';
-      nameOkBtn.textContent = index >= 0 ? 'Save' : 'Add';
-      nameOverlay.classList.add('show');
-      requestAnimationFrame(() => {
-        nameInput.focus();
-        nameInput.select();
-      });
-    }
-
-    function addPlayer() {
-      openNameEditor('', -1);
-    }
-
-    function editPlayer(i) {
-      if (i < 0 || i >= players.length) return;
-      openNameEditor(players[i].name, i);
-    }
-
-    function commitName() {
-      const name = nameInput.value.trim();
-      nameOverlay.classList.remove('show');
-      nameInput.blur();
-      if (!name) {
-        editIndex = -1;
-        return;
+      scheduleSave() {
+        if (this.savePending) return;
+        this.savePending = true;
+        requestAnimationFrame(() => {
+          this.savePending = false;
+          this.saveState();
+        });
       }
-      if (editIndex >= 0 && editIndex < players.length) {
-        players[editIndex].name = name.slice(0, 12);
-      } else {
-        players.push({ name: name.slice(0, 12), count: 0 });
+
+      loadState() {
+        try {
+          const raw = localStorage.getItem(Config.storageKey);
+          if (!raw) return;
+          const data = JSON.parse(raw);
+          if (!Array.isArray(data)) return;
+          this.players = data
+            .filter(p => p && typeof p.name === 'string')
+            .map(p => new Player(p.name, Number(p.count) || 0));
+        } catch (e) {
+          this.players = [];
+        }
       }
-      editIndex = -1;
-      saveState();
-    }
 
-    function cancelName() {
-      nameOverlay.classList.remove('show');
-      nameInput.blur();
-      editIndex = -1;
-    }
-
-    document.getElementById('nameOk').addEventListener('click', commitName);
-    document.getElementById('nameCancel').addEventListener('click', cancelName);
-    nameInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        commitName();
-      } else if (e.key === 'Escape') {
-        cancelName();
+      resize() {
+        this.canvas.width = window.innerWidth;
+        this.canvas.height = window.innerHeight;
       }
-    });
 
-    function removePlayer(i) {
-      if (i < 0 || i >= players.length) return;
-      players.splice(i, 1);
-      falling = falling.filter(b => b.player !== i).map(b => {
-        if (b.player > i) b.player--;
-        return b;
-      });
-      saveState();
-    }
+      stack(count) {
+        return this.mode.build(count);
+      }
 
-    function clearCounts() {
-      for (const p of players) p.count = 0;
-      falling = [];
-      saveState();
-    }
+      pendingFor(i) {
+        return this.falling.filter(b => b.player === i).length;
+      }
 
-    function clearAll() {
-      players = [];
-      falling = [];
-      saveState();
-    }
+      visualHeight(count, pending) {
+        return this.stack(count).length + pending;
+      }
 
-    function allZero() {
-      return players.every(p => p.count === 0) && falling.length === 0;
-    }
+      layout() {
+        const n = Math.max(this.players.length, 1);
+        const colW = this.canvas.width / n;
+        const maxBeadW = Math.max(6, colW - Config.colPad);
+        const topY = Config.toolbarH + 18;
+        const bottomY = this.canvas.height - Config.bottomPad;
+        const stringH = Math.max(bottomY - topY, 20);
 
-    function pendingFor(i) {
-      return falling.filter(b => b.player === i).length;
-    }
+        let maxStack = 0;
+        for (let i = 0; i < this.players.length; i++) {
+          maxStack = Math.max(maxStack, this.visualHeight(this.players[i].count, this.pendingFor(i)));
+        }
 
-    function spawnDrop(i, L) {
-      const p = players[i];
-      const pending = pendingFor(i);
-      if (p.count + pending >= MAX_COUNT) return;
-      const fromCount = p.count + pending;
-      const nextCount = fromCount + 1;
-      const val = dropValue(nextCount);
-      const style = getBeadStyle(val);
-      const finalSlots = beadsForCount(nextCount).length;
-      const keep = keepPrefixLen(fromCount, nextCount);
-      const x = (i + 0.5) * L.colW;
-      const w = L.baseW * widthMult(val);
-      const targetY = L.bottomY - finalSlots * (L.beadH + L.gap) + L.beadH / 2;
-      falling.push({
-        player: i,
-        val,
-        fromCount,
-        toCount: nextCount,
-        keep,
-        x, y: L.topY + 16, targetY,
-        w, h: L.beadH,
-        color: style.fill,
-        outline: style.outline,
-        shine: style.shine,
-        round: style.round,
-        vy: 0
-      });
-    }
+        const fit = Math.min(Math.max(maxStack + 2, Config.minFit), Config.maxFit);
+        const slot = stringH / fit;
 
-    function hitTest(x, y) {
-      if (y < TOOLBAR_H) {
-        if (x < 56) return { type: 'reset' };
-        if (x > canvas.width - 56) return { type: 'add' };
+        let beadH = slot * (1 - Config.gapRatio);
+        let gap = slot * Config.gapRatio;
+        let baseW = beadH * Config.baseAspect;
+
+        const widest = baseW * Config.maxWidthMult;
+        if (widest > maxBeadW) {
+          baseW = maxBeadW / Config.maxWidthMult;
+          beadH = baseW / Config.baseAspect;
+          gap = beadH * Config.gapRatio;
+        }
+
+        beadH = Math.max(2.5, beadH);
+        gap = Math.max(0.6, gap);
+        baseW = Math.max(5, baseW);
+
+        return { n, colW, maxBeadW, topY, bottomY, stringH, beadH, baseW, gap, maxStack };
+      }
+
+      openNameEditor(prefill, index) {
+        this.editIndex = index;
+        this.nameInput.value = prefill || '';
+        this.nameOkBtn.textContent = index >= 0 ? 'Save' : 'Add';
+        this.nameOverlay.classList.add('show');
+        requestAnimationFrame(() => {
+          this.nameInput.focus();
+          this.nameInput.select();
+        });
+      }
+
+      addPlayer() {
+        this.openNameEditor('', -1);
+      }
+
+      editPlayer(i) {
+        if (i < 0 || i >= this.players.length) return;
+        this.openNameEditor(this.players[i].name, i);
+      }
+
+      commitName() {
+        const name = this.nameInput.value.trim();
+        this.nameOverlay.classList.remove('show');
+        this.nameInput.blur();
+        if (!name) {
+          this.editIndex = -1;
+          return;
+        }
+        if (this.editIndex >= 0 && this.editIndex < this.players.length) {
+          this.players[this.editIndex].name = name.slice(0, 12);
+        } else {
+          this.players.push(new Player(name, 0));
+        }
+        this.editIndex = -1;
+        this.saveState();
+      }
+
+      cancelName() {
+        this.nameOverlay.classList.remove('show');
+        this.nameInput.blur();
+        this.editIndex = -1;
+      }
+
+      removePlayer(i) {
+        if (i < 0 || i >= this.players.length) return;
+        this.players.splice(i, 1);
+        this.falling = this.falling.filter(b => b.player !== i).map(b => {
+          if (b.player > i) b.player--;
+          return b;
+        });
+        this.saveState();
+      }
+
+      clearCounts() {
+        for (const p of this.players) p.count = 0;
+        this.falling = [];
+        this.saveState();
+      }
+
+      clearAll() {
+        this.players = [];
+        this.falling = [];
+        this.saveState();
+      }
+
+      allZero() {
+        return this.players.every(p => p.count === 0) && this.falling.length === 0;
+      }
+
+      spawnDrop(i, L) {
+        const p = this.players[i];
+        const pending = this.pendingFor(i);
+        if (p.count + pending >= Config.maxCount) return;
+
+        const fromCount = p.count + pending;
+        const toCount = fromCount + 1;
+        const denom = this.mode.dropDenom(toCount);
+        const look = lookForDenom(denom);
+        const finalSlots = this.stack(toCount).length;
+        const keep = keepPrefixLen(this.mode, fromCount, toCount);
+        const x = (i + 0.5) * L.colW;
+        const w = L.baseW * look.mult;
+        const targetY = L.bottomY - finalSlots * (L.beadH + L.gap) + L.beadH / 2;
+
+        this.falling.push(new FallingBead({
+          player: i,
+          denom,
+          fromCount,
+          toCount,
+          keep,
+          x,
+          y: L.topY + 16,
+          targetY,
+          w,
+          h: L.beadH,
+          look
+        }));
+      }
+
+      hitTest(x, y) {
+        if (y < Config.toolbarH) {
+          if (x < 56) return { type: 'reset' };
+          if (x > this.canvas.width - 56) return { type: 'add' };
+          return null;
+        }
+        if (this.players.length === 0) return null;
+        const L = this.layout();
+        const i = Math.floor(x / L.colW);
+        if (i < 0 || i >= this.players.length) return null;
+        const cx = (i + 0.5) * L.colW;
+        if (Math.hypot(x - cx, y - L.topY) < 20) return { type: 'term', i };
+        if (y > L.bottomY - 6 && y < this.canvas.height - 4) return { type: 'name', i };
         return null;
       }
-      if (players.length === 0) return null;
-      const L = layout();
-      const i = Math.floor(x / L.colW);
-      if (i < 0 || i >= players.length) return null;
-      const cx = (i + 0.5) * L.colW;
-      const termR = 14;
-      if (Math.hypot(x - cx, y - L.topY) < termR + 6) return { type: 'term', i };
-      if (y > L.bottomY - 6 && y < canvas.height - 4) return { type: 'name', i };
-      return null;
-    }
 
-    function clearHolds() {
-      resetHolding = false;
-      termHolding = -1;
-      nameHolding = -1;
-    }
-
-    function onPointerDown(e) {
-      if (nameOverlay.classList.contains('show')) return;
-      e.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const x = (e.clientX || e.touches[0].clientX) - rect.left;
-      const y = (e.clientY || e.touches[0].clientY) - rect.top;
-      lastPointer = { x, y };
-      const hit = hitTest(x, y);
-      clearHolds();
-      resetDidLong = false;
-      termDidLong = false;
-      nameDidLong = false;
-      if (hit && hit.type === 'reset') {
-        resetHolding = true;
-        resetHoldStart = performance.now();
-      } else if (hit && hit.type === 'term') {
-        termHolding = hit.i;
-        termHoldStart = performance.now();
-      } else if (hit && hit.type === 'name') {
-        nameHolding = hit.i;
-        nameHoldStart = performance.now();
-      }
-    }
-
-    function onPointerUp(e) {
-      if (nameOverlay.classList.contains('show')) return;
-      e.preventDefault();
-      if (!lastPointer) return;
-      const x = lastPointer.x;
-      const y = lastPointer.y;
-      lastPointer = null;
-
-      if (resetDidLong || termDidLong || nameDidLong) {
-        resetDidLong = false;
-        termDidLong = false;
-        nameDidLong = false;
-        clearHolds();
-        return;
+      clearHolds() {
+        this.resetHolding = false;
+        this.termHolding = -1;
+        this.nameHolding = -1;
       }
 
-      const hit = hitTest(x, y);
-      clearHolds();
-
-      if (!hit) return;
-      if (hit.type === 'reset') return;
-
-      if (hit.type === 'add') {
-        addPlayer();
-        return;
+      pointerPos(e) {
+        const rect = this.canvas.getBoundingClientRect();
+        const src = e.touches && e.touches[0] ? e.touches[0] : e;
+        return {
+          x: src.clientX - rect.left,
+          y: src.clientY - rect.top
+        };
       }
-      if (hit.type === 'name') {
-        const L = layout();
-        spawnDrop(hit.i, L);
-        return;
+
+      onPointerDown(e) {
+        if (this.nameOverlay.classList.contains('show')) return;
+        e.preventDefault();
+        const { x, y } = this.pointerPos(e);
+        this.lastPointer = { x, y };
+        const hit = this.hitTest(x, y);
+        this.clearHolds();
+        this.resetDidLong = false;
+        this.termDidLong = false;
+        this.nameDidLong = false;
+        if (hit && hit.type === 'reset') {
+          this.resetHolding = true;
+          this.resetHoldStart = performance.now();
+        } else if (hit && hit.type === 'term') {
+          this.termHolding = hit.i;
+          this.termHoldStart = performance.now();
+        } else if (hit && hit.type === 'name') {
+          this.nameHolding = hit.i;
+          this.nameHoldStart = performance.now();
+        }
       }
-      if (hit.type === 'term') {
-        const i = hit.i;
-        for (let fi = falling.length - 1; fi >= 0; fi--) {
-          if (falling[fi].player === i) {
-            falling.splice(fi, 1);
-            return;
+
+      onPointerUp(e) {
+        if (this.nameOverlay.classList.contains('show')) return;
+        e.preventDefault();
+        if (!this.lastPointer) return;
+        const { x, y } = this.lastPointer;
+        this.lastPointer = null;
+
+        if (this.resetDidLong || this.termDidLong || this.nameDidLong) {
+          this.resetDidLong = false;
+          this.termDidLong = false;
+          this.nameDidLong = false;
+          this.clearHolds();
+          return;
+        }
+
+        const hit = this.hitTest(x, y);
+        this.clearHolds();
+        if (!hit || hit.type === 'reset') return;
+
+        if (hit.type === 'add') {
+          this.addPlayer();
+          return;
+        }
+        if (hit.type === 'name') {
+          this.spawnDrop(hit.i, this.layout());
+          return;
+        }
+        if (hit.type === 'term') {
+          const i = hit.i;
+          for (let fi = this.falling.length - 1; fi >= 0; fi--) {
+            if (this.falling[fi].player === i) {
+              this.falling.splice(fi, 1);
+              return;
+            }
+          }
+          if (this.players[i] && this.players[i].count > 0) {
+            this.players[i].count--;
+            this.scheduleSave();
           }
         }
-        if (players[i] && players[i].count > 0) {
-          players[i].count--;
-          scheduleSave();
+      }
+
+      onPointerMove(e) {
+        if (!this.lastPointer) return;
+        if (!(this.resetHolding || this.termHolding >= 0 || this.nameHolding >= 0)) return;
+        const { x, y } = this.pointerPos(e);
+        if (Math.hypot(x - this.lastPointer.x, y - this.lastPointer.y) > 20) {
+          this.clearHolds();
         }
       }
-    }
 
-    function onPointerMove(e) {
-      if (!lastPointer) return;
-      if (!(resetHolding || termHolding >= 0 || nameHolding >= 0)) return;
-      const rect = canvas.getBoundingClientRect();
-      const x = (e.clientX || (e.touches && e.touches[0].clientX)) - rect.left;
-      const y = (e.clientY || (e.touches && e.touches[0].clientY)) - rect.top;
-      if (Math.hypot(x - lastPointer.x, y - lastPointer.y) > 20) {
-        clearHolds();
-      }
-    }
+      bindUi() {
+        const c = this.canvas;
+        c.addEventListener('pointerdown', e => this.onPointerDown(e));
+        c.addEventListener('pointerup', e => this.onPointerUp(e));
+        c.addEventListener('pointercancel', () => {
+          this.clearHolds();
+          this.lastPointer = null;
+        });
+        c.addEventListener('pointermove', e => this.onPointerMove(e));
+        c.addEventListener('touchstart', e => this.onPointerDown(e), { passive: false });
+        c.addEventListener('touchend', e => this.onPointerUp(e), { passive: false });
 
-    canvas.addEventListener('pointerdown', onPointerDown);
-    canvas.addEventListener('pointerup', onPointerUp);
-    canvas.addEventListener('pointercancel', () => {
-      clearHolds();
-      lastPointer = null;
-    });
-    canvas.addEventListener('pointermove', onPointerMove);
-    canvas.addEventListener('touchstart', onPointerDown, {passive: false});
-    canvas.addEventListener('touchend', onPointerUp, {passive: false});
-
-    function update(dt) {
-      let landed = false;
-      for (let i = falling.length - 1; i >= 0; i--) {
-        const b = falling[i];
-        b.vy += 1800 * dt;
-        b.y += b.vy * dt;
-        if (b.y >= b.targetY) {
-          const p = players[b.player];
-          if (p && p.count < MAX_COUNT) {
-            p.count++;
+        document.getElementById('nameOk').addEventListener('click', () => this.commitName());
+        document.getElementById('nameCancel').addEventListener('click', () => this.cancelName());
+        this.nameInput.addEventListener('keydown', e => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            this.commitName();
+          } else if (e.key === 'Escape') {
+            this.cancelName();
           }
-          falling.splice(i, 1);
-          landed = true;
+        });
+      }
+
+      update(dt) {
+        let landed = false;
+        for (let i = this.falling.length - 1; i >= 0; i--) {
+          const b = this.falling[i];
+          b.vy += Config.gravity * dt;
+          b.y += b.vy * dt;
+          if (b.y >= b.targetY) {
+            const p = this.players[b.player];
+            if (p && p.count < Config.maxCount) p.count++;
+            this.falling.splice(i, 1);
+            landed = true;
+          }
+        }
+        if (landed) this.scheduleSave();
+
+        const now = performance.now();
+
+        if (this.resetHolding && now - this.resetHoldStart >= Config.longMs) {
+          if (this.allZero()) this.clearAll();
+          else this.clearCounts();
+          this.resetHolding = false;
+          this.resetDidLong = true;
+        }
+
+        if (this.termHolding >= 0 && now - this.termHoldStart >= Config.longMs) {
+          this.removePlayer(this.termHolding);
+          this.termHolding = -1;
+          this.termDidLong = true;
+        }
+
+        if (this.nameHolding >= 0 && now - this.nameHoldStart >= Config.longMs) {
+          const idx = this.nameHolding;
+          this.nameHolding = -1;
+          this.nameDidLong = true;
+          this.editPlayer(idx);
         }
       }
-      if (landed) scheduleSave();
 
-      const now = performance.now();
+      drawBead(x, y, w, h, look) {
+        const ctx = this.ctx;
+        const r = Math.min(w, h) * (look.round != null ? look.round : 0.45);
+        ctx.fillStyle = look.fill;
+        ctx.beginPath();
+        ctx.roundRect(x - w / 2, y - h / 2, w, h, r);
+        ctx.fill();
+        ctx.strokeStyle = look.outline;
+        ctx.lineWidth = Math.max(1, h * 0.12);
+        ctx.stroke();
+        const sw = w * 0.55;
+        const sh = h * 0.28;
+        const sr = Math.min(sw, sh) * (look.round != null ? look.round : 0.45);
+        ctx.fillStyle = look.shine;
+        ctx.beginPath();
+        ctx.roundRect(x - sw / 2, y - h * 0.32, sw, sh, sr);
+        ctx.fill();
+      }
 
-      if (resetHolding && now - resetHoldStart >= LONG_MS) {
-        if (allZero()) {
-          clearAll();
-        } else {
-          clearCounts();
+      drawStack(cx, beads, L, carries) {
+        for (let k = 0; k < beads.length; k++) {
+          const bead = beads[k];
+          const by = L.bottomY - (k + 1) * (L.beadH + L.gap) + L.beadH / 2;
+          if (carries && carries.length) {
+            let crushed = false;
+            for (const f of carries) {
+              if (k >= f.keep && f.y + L.beadH * 0.35 >= by) {
+                crushed = true;
+                break;
+              }
+            }
+            if (crushed) continue;
+          }
+          const w = L.baseW * bead.look.mult;
+          this.drawBead(cx, by, w, L.beadH, bead.look);
         }
-        resetHolding = false;
-        resetDidLong = true;
       }
 
-      if (termHolding >= 0 && now - termHoldStart >= LONG_MS) {
-        removePlayer(termHolding);
-        termHolding = -1;
-        termDidLong = true;
-      }
+      drawToolbar() {
+        const ctx = this.ctx;
+        const w = this.canvas.width;
+        ctx.fillStyle = '#0f2214';
+        ctx.fillRect(0, 0, w, Config.toolbarH);
+        ctx.strokeStyle = '#1a3a24';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, Config.toolbarH - 0.5);
+        ctx.lineTo(w, Config.toolbarH - 0.5);
+        ctx.stroke();
 
-      if (nameHolding >= 0 && now - nameHoldStart >= LONG_MS) {
-        const idx = nameHolding;
-        nameHolding = -1;
-        nameDidLong = true;
-        editPlayer(idx);
-      }
-    }
-
-    function draw() {
-      const L = layout();
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      ctx.fillStyle = '#0f2214';
-      ctx.fillRect(0, 0, canvas.width, TOOLBAR_H);
-      ctx.strokeStyle = '#1a3a24';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(0, TOOLBAR_H - 0.5);
-      ctx.lineTo(canvas.width, TOOLBAR_H - 0.5);
-      ctx.stroke();
-
-      const btnY = TOOLBAR_H / 2;
-      ctx.fillStyle = resetHolding ? '#3a6a4a' : '#2a5a3a';
-      ctx.beginPath();
-      ctx.roundRect(10, 8, 36, 32, 6);
-      ctx.fill();
-      ctx.fillStyle = '#a8d0b0';
-      ctx.font = 'bold 16px system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('↻', 28, btnY + 1);
-
-      ctx.fillStyle = '#2a5a3a';
-      ctx.beginPath();
-      ctx.roundRect(canvas.width - 46, 8, 36, 32, 6);
-      ctx.fill();
-      ctx.fillStyle = '#a8d0b0';
-      ctx.font = 'bold 24px system-ui, sans-serif';
-      ctx.fillText('+', canvas.width - 28, btnY + 1);
-
-      if (players.length === 0) {
-        ctx.fillStyle = '#4a6a50';
-        ctx.font = '18px system-ui, sans-serif';
+        const btnY = Config.toolbarH / 2;
+        ctx.fillStyle = this.resetHolding ? '#3a6a4a' : '#2a5a3a';
+        ctx.beginPath();
+        ctx.roundRect(10, 8, 36, 32, 6);
+        ctx.fill();
+        ctx.fillStyle = '#a8d0b0';
+        ctx.font = 'bold 16px system-ui, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText('Tap + to add players', canvas.width / 2, canvas.height / 2);
-        return;
+        ctx.textBaseline = 'middle';
+        ctx.fillText('↻', 28, btnY + 1);
+
+        ctx.fillStyle = '#2a5a3a';
+        ctx.beginPath();
+        ctx.roundRect(w - 46, 8, 36, 32, 6);
+        ctx.fill();
+        ctx.fillStyle = '#a8d0b0';
+        ctx.font = 'bold 24px system-ui, sans-serif';
+        ctx.fillText('+', w - 28, btnY + 1);
       }
 
-      for (let i = 0; i < players.length; i++) {
-        const p = players[i];
+      drawPlayerColumn(i, L) {
+        const ctx = this.ctx;
+        const p = this.players[i];
         const cx = (i + 0.5) * L.colW;
 
         ctx.strokeStyle = '#3a5a3a';
@@ -577,7 +645,7 @@
         ctx.lineTo(cx, L.bottomY);
         ctx.stroke();
 
-        const holdingThis = termHolding === i;
+        const holdingThis = this.termHolding === i;
         ctx.fillStyle = holdingThis ? '#888' : '#6a6a6a';
         ctx.beginPath();
         ctx.arc(cx, L.topY, 12, 0, Math.PI * 2);
@@ -591,30 +659,19 @@
         ctx.textBaseline = 'middle';
         ctx.fillText('−', cx, L.topY + 0.5);
 
-        const beads = beadsForCount(p.count);
-        const carries = falling.filter(f => f.player === i && f.val > 1 && f.fromCount === p.count);
-        for (let k = 0; k < beads.length; k++) {
-          const val = beads[k];
-          const by = L.bottomY - (k + 1) * (L.beadH + L.gap) + L.beadH / 2;
-          let crushed = false;
-          for (const f of carries) {
-            if (k >= f.keep && f.y + L.beadH * 0.35 >= by) {
-              crushed = true;
-              break;
-            }
-          }
-          if (crushed) continue;
-          const w = L.baseW * widthMult(val);
-          drawBead(cx, by, w, L.beadH, getBeadStyle(val));
-        }
+        const beads = this.stack(p.count);
+        const carries = this.mode.crush
+          ? this.falling.filter(f => f.player === i && f.denom > 1 && f.fromCount === p.count)
+          : null;
+        this.drawStack(cx, beads, L, carries);
 
         const fs = Math.min(15, Math.max(10, L.colW / (p.name.length * 0.55 + 2)));
         ctx.font = `bold ${fs}px system-ui, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         const textW = ctx.measureText(p.name).width + 14;
-        const tw = Math.min(L.colW - 4, Math.max(MIN_NAME_W, textW));
-        ctx.fillStyle = nameHolding === i ? '#1a3a28' : '#122818';
+        const tw = Math.min(L.colW - 4, Math.max(Config.minNameW, textW));
+        ctx.fillStyle = this.nameHolding === i ? '#1a3a28' : '#122818';
         ctx.beginPath();
         ctx.roundRect(cx - tw / 2, L.bottomY + 8, tw, 30, 8);
         ctx.fill();
@@ -622,43 +679,40 @@
         ctx.fillText(p.name, cx, L.bottomY + 23);
       }
 
-      for (const b of falling) {
-        drawBead(b.x, b.y, b.w, b.h, {
-          fill: b.color,
-          outline: b.outline,
-          shine: b.shine,
-          round: b.round
-        });
+      draw() {
+        const L = this.layout();
+        const ctx = this.ctx;
+        ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+        this.drawToolbar();
+
+        if (this.players.length === 0) {
+          ctx.fillStyle = '#4a6a50';
+          ctx.font = '18px system-ui, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('Tap + to add players', this.canvas.width / 2, this.canvas.height / 2);
+          return;
+        }
+
+        for (let i = 0; i < this.players.length; i++) {
+          this.drawPlayerColumn(i, L);
+        }
+
+        for (const b of this.falling) {
+          this.drawBead(b.x, b.y, b.w, b.h, b.look);
+        }
+      }
+
+      frame(now) {
+        const dt = Math.min((now - this.lastTime) / 1000, 0.05);
+        this.lastTime = now;
+        this.update(dt);
+        this.draw();
+        requestAnimationFrame(t => this.frame(t));
       }
     }
 
-    function drawBead(x, y, w, h, style) {
-      const r = Math.min(w, h) * (style.round != null ? style.round : 0.45);
-      ctx.fillStyle = style.fill;
-      ctx.beginPath();
-      ctx.roundRect(x - w / 2, y - h / 2, w, h, r);
-      ctx.fill();
-      ctx.strokeStyle = style.outline;
-      ctx.lineWidth = Math.max(1, h * 0.12);
-      ctx.stroke();
-      const sw = w * 0.55;
-      const sh = h * 0.28;
-      const sr = Math.min(sw, sh) * (style.round != null ? style.round : 0.45);
-      ctx.fillStyle = style.shine;
-      ctx.beginPath();
-      ctx.roundRect(x - sw / 2, y - h * 0.32, sw, sh, sr);
-      ctx.fill();
-    }
-
-    let last = performance.now();
-    function frame(now) {
-      const dt = Math.min((now - last) / 1000, 0.05);
-      last = now;
-      update(dt);
-      draw();
-      requestAnimationFrame(frame);
-    }
-    requestAnimationFrame(frame);
+    new App();
   </script>
 </body>
 </html>
