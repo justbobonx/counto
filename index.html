@@ -367,6 +367,11 @@
         return this.players.every(p => p.count === 0) && this.falling.length === 0;
       }
 
+      toggleMode() {
+        this.mode = this.mode.id === 'collapsed' ? StackMode.flat : StackMode.collapsed;
+        this.falling = [];
+      }
+
       spawnDrop(i, L) {
         const p = this.players[i];
         const pending = this.pendingFor(i);
@@ -400,6 +405,7 @@
       hitTest(x, y) {
         if (y < Config.toolbarH) {
           if (x < 56) return { type: 'reset' };
+          if (x > this.canvas.width - 100 && x <= this.canvas.width - 56) return { type: 'mode' };
           if (x > this.canvas.width - 56) return { type: 'add' };
           return null;
         }
@@ -469,6 +475,10 @@
         this.clearHolds();
         if (!hit || hit.type === 'reset') return;
 
+        if (hit.type === 'mode') {
+          this.toggleMode();
+          return;
+        }
         if (hit.type === 'add') {
           this.addPlayer();
           return;
@@ -623,6 +633,15 @@
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText('↻', 28, btnY + 1);
+
+        const modeX = w - 90;
+        ctx.fillStyle = '#2a5a3a';
+        ctx.beginPath();
+        ctx.roundRect(modeX, 8, 36, 32, 6);
+        ctx.fill();
+        ctx.fillStyle = '#a8d0b0';
+        ctx.font = 'bold 18px system-ui, sans-serif';
+        ctx.fillText(this.mode.id === 'collapsed' ? '◆' : '≡', modeX + 18, btnY + 1);
 
         ctx.fillStyle = '#2a5a3a';
         ctx.beginPath();
