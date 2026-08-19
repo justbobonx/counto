@@ -134,6 +134,15 @@
       return 1;
     }
 
+    // How many bottom beads survive the transition from → to (common prefix)
+    function keepPrefixLen(from, to) {
+      const a = beadsForCount(from);
+      const b = beadsForCount(to);
+      let i = 0;
+      while (i < a.length && i < b.length && a[i] === b[i]) i++;
+      return i;
+    }
+
     function saveState() {
       try {
         const data = players.map(p => ({ name: p.name, count: p.count }));
@@ -335,17 +344,21 @@
       const p = players[i];
       const pending = pendingFor(i);
       if (p.count + pending >= MAX_COUNT) return;
-      const nextCount = p.count + pending + 1;
+      const fromCount = p.count + pending;
+      const nextCount = fromCount + 1;
       const val = dropValue(nextCount);
       const style = getBeadStyle(val);
-      // land on top of the final compressed stack (carry pops lower beads on land)
       const finalSlots = beadsForCount(nextCount).length;
+      const keep = keepPrefixLen(fromCount, nextCount);
       const x = (i + 0.5) * L.colW;
       const w = L.baseW * widthMult(val);
       const targetY = L.bottomY - finalSlots * (L.beadH + L.gap) + L.beadH / 2;
       falling.push({
         player: i,
         val,
+        fromCount,
+        toCount: nextCount,
+        keep,
         x, y: L.topY + 16, targetY,
         w, h: L.beadH,
         color: style.fill,
@@ -579,9 +592,18 @@
         ctx.fillText('−', cx, L.topY + 0.5);
 
         const beads = beadsForCount(p.count);
+        const carries = falling.filter(f => f.player === i && f.val > 1 && f.fromCount === p.count);
         for (let k = 0; k < beads.length; k++) {
           const val = beads[k];
           const by = L.bottomY - (k + 1) * (L.beadH + L.gap) + L.beadH / 2;
+          let crushed = false;
+          for (const f of carries) {
+            if (k >= f.keep && f.y + L.beadH * 0.35 >= by) {
+              crushed = true;
+              break;
+            }
+          }
+          if (crushed) continue;
           const w = L.baseW * widthMult(val);
           drawBead(cx, by, w, L.beadH, getBeadStyle(val));
         }
