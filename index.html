@@ -110,20 +110,19 @@
     let lastPointer = null;
     let savePending = false;
 
-    // Canonical place-value stack, bottom → top.
-    // ones 0–4, fives 0–1, tens 0–4, fifties 0+
-    // red (5) replaces 5 ones; blue (10) replaces red+4 ones;
-    // purple (50) replaces 4 blues + red + 4 ones.
+    // Bottom → top: fifties, tens, fives, ones.
+    // 5th unit becomes a red and clears 4 whites; further whites stack on the red.
+    // 10 clears red+4 whites into a blue; 50 clears 5 blues into a purple.
     function beadsForCount(n) {
       const out = [];
       let r = Math.max(0, n | 0);
       const n50 = Math.floor(r / 50); r %= 50;
       const n10 = Math.floor(r / 10); r %= 10;
       const n5 = Math.floor(r / 5); r %= 5;
-      for (let i = 0; i < r; i++) out.push(1);
-      for (let i = 0; i < n5; i++) out.push(5);
-      for (let i = 0; i < n10; i++) out.push(10);
       for (let i = 0; i < n50; i++) out.push(50);
+      for (let i = 0; i < n10; i++) out.push(10);
+      for (let i = 0; i < n5; i++) out.push(5);
+      for (let i = 0; i < r; i++) out.push(1);
       return out;
     }
 
