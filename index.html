@@ -88,15 +88,16 @@
       gapRatio: 0.18,
       storageKey: 'counto_players_v1',
       longMs: 1000,
-      maxWidthMult: 1.6,
+      maxWidthMult: 1.8,
       gravity: 1800
     };
 
     const BeadLook = {
-      1:  { mult: 1.0, fill: '#f5f0d6', outline: '#8a8a7a', shine: 'rgba(255,255,230,0.4)', round: 0.45 },
-      5:  { mult: 1.2, fill: '#c62828', outline: '#e88888', shine: 'rgba(255,180,180,0.35)', round: 0.35 },
-      10: { mult: 1.4, fill: '#3a6ea5', outline: '#8eb8e8', shine: 'rgba(180,210,255,0.4)', round: 0.25 },
-      50: { mult: 1.6, fill: '#9c27b0', outline: '#e040fb', shine: 'rgba(240,180,255,0.45)', round: 0.15 }
+      1:   { mult: 1.0, fill: '#f5f0d6', outline: '#8a8a7a', shine: 'rgba(255,255,230,0.4)', round: 0.45 },
+      5:   { mult: 1.2, fill: '#c62828', outline: '#e88888', shine: 'rgba(255,180,180,0.35)', round: 0.35 },
+      10:  { mult: 1.4, fill: '#3a6ea5', outline: '#8eb8e8', shine: 'rgba(180,210,255,0.4)', round: 0.25 },
+      50:  { mult: 1.6, fill: '#9c27b0', outline: '#e040fb', shine: 'rgba(240,180,255,0.45)', round: 0.15 },
+      100: { mult: 1.8, fill: '#ff9800', outline: '#ffcc80', shine: 'rgba(255,220,160,0.5)', round: 0.1 }
     };
 
     function lookForDenom(v) {
@@ -104,6 +105,7 @@
     }
 
     function denomForOrdinal(n) {
+      if (n % 100 === 0) return 100;
       if (n % 50 === 0) return 50;
       if (n % 10 === 0) return 10;
       if (n % 5 === 0) return 5;
@@ -116,9 +118,11 @@
         build(count) {
           const out = [];
           let r = Math.max(0, count | 0);
+          const n100 = Math.floor(r / 100); r %= 100;
           const n50 = Math.floor(r / 50); r %= 50;
           const n10 = Math.floor(r / 10); r %= 10;
           const n5 = Math.floor(r / 5); r %= 5;
+          for (let i = 0; i < n100; i++) out.push({ denom: 100, look: BeadLook[100] });
           for (let i = 0; i < n50; i++) out.push({ denom: 50, look: BeadLook[50] });
           for (let i = 0; i < n10; i++) out.push({ denom: 10, look: BeadLook[10] });
           for (let i = 0; i < n5; i++) out.push({ denom: 5, look: BeadLook[5] });
@@ -126,6 +130,7 @@
           return out;
         },
         dropDenom(to) {
+          if (to % 100 === 0) return 100;
           if (to % 50 === 0) return 50;
           if (to % 10 === 0) return 10;
           if (to % 5 === 0) return 5;
@@ -219,7 +224,10 @@
 
       saveState() {
         try {
-          const data = this.players.map(p => ({ name: p.name, count: p.count }));
+          const data = {
+            mode: this.mode.id,
+            players: this.players.map(p => ({ name: p.name, count: p.count }))
+          };
           localStorage.setItem(Config.storageKey, JSON.stringify(data));
         } catch (e) {}
       }
@@ -238,8 +246,17 @@
           const raw = localStorage.getItem(Config.storageKey);
           if (!raw) return;
           const data = JSON.parse(raw);
-          if (!Array.isArray(data)) return;
-          this.players = data
+          let list = null;
+          if (Array.isArray(data)) {
+            list = data;
+          } else if (data && Array.isArray(data.players)) {
+            list = data.players;
+            if (data.mode === 'flat') this.mode = StackMode.flat;
+            else if (data.mode === 'collapsed') this.mode = StackMode.collapsed;
+          } else {
+            return;
+          }
+          this.players = list
             .filter(p => p && typeof p.name === 'string')
             .map(p => new Player(p.name, Number(p.count) || 0));
         } catch (e) {
@@ -370,6 +387,7 @@
       toggleMode() {
         this.mode = this.mode.id === 'collapsed' ? StackMode.flat : StackMode.collapsed;
         this.falling = [];
+        this.saveState();
       }
 
       spawnDrop(i, L) {
